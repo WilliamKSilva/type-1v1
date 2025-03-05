@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/WilliamKSilva/type-1v1/internal"
@@ -49,11 +50,13 @@ func broadcastMessages(c *websocket.Conn, conn internal.Connection, state *State
 				continue
 			}
 
-			// TODO: remover mensagem da slice quando já tiver sido entregue
-			// para todas as conexões do Room
-			for j, m := range (*state.Rooms)[i].Messages {
-				// Mensagem já foi entregue para essa conexão
-				// log.Println(m.DeliveredTo[connId])
+			mes := &(*state.Rooms)[i].Messages
+			for j, m := range *mes {
+				if m.DeliveredCount >= len(r.Connections)-1 {
+					(*mes) = slices.Delete((*mes), j, j+1)
+					continue
+				}
+
 				if m.DeliveredTo[conn.Id] || m.ConnectionId == conn.Id {
 					continue
 				}
@@ -63,7 +66,8 @@ func broadcastMessages(c *websocket.Conn, conn internal.Connection, state *State
 					log.Println("[broadcastMessages] error trying to marshal message:", err)
 				}
 				c.WriteMessage(websocket.BinaryMessage, data)
-				(*state.Rooms)[i].Messages[j].DeliveredTo[conn.Id] = true
+				(*mes)[j].DeliveredTo[conn.Id] = true
+				(*mes)[j].DeliveredCount += 1
 			}
 
 			continue
@@ -158,7 +162,7 @@ func main() {
 
 	state := State{
 		Rooms: &[]internal.Room{
-			internal.Room{
+			{
 				Id: mockedRoomId,
 			},
 		},
