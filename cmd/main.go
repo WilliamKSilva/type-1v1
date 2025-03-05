@@ -52,13 +52,68 @@ func unmarshal_message[T any](c *websocket.Conn, mt int, buf []byte) *T {
 	return &message
 }
 
+func broadcast_messages(c *websocket.Conn, conn Connection, rooms *[]Room) {
+	for {
+		for i, r := range *rooms {
+			if conn.RoomId != r.Id {
+				continue
+			}
+
+			// TODO: remover mensagem da slice quando já tiver sido entregue
+			// para todas as conexões do Room
+			for j, m := range (*rooms)[i].Messages {
+				// Mensagem já foi entregue para essa conexão
+				// log.Println(m.DeliveredTo[connId])
+				if m.DeliveredTo[conn.Id] || m.ConnectionId == conn.Id {
+					continue
+				}
+
+				c.WriteMessage(1, []byte(m.Content))
+				(*rooms)[i].Messages[j].DeliveredTo[conn.Id] = true
+			}
+
+			continue
+		}
+	}
+}
+
+func read_messages(c *websocket.Conn, conn Connection, rooms *[]Room) {
+	// TODO: tratar o fechamento da conexão
+	for {
+		mt, buf, err := c.ReadMessage()
+		if err != nil {
+			log.Println("read:", err)
+			break
+		}
+
+		data := unmarshal_message[Message](c, mt, buf)
+		if data == nil {
+			continue
+		}
+
+		for i, r := range *rooms {
+			if data.RoomId == r.Id {
+				(*rooms)[i].Messages = append((*rooms)[i].Messages, Message{
+					Id:           uuid.New().String(),
+					Content:      data.Content,
+					RoomId:       data.RoomId,
+					ConnectionId: conn.Id,
+					DeliveredTo:  make(map[string]bool),
+				})
+			}
+
+			log.Printf("New message received from: %s. Content: %s", conn.Name, data.Content)
+		}
+	}
+}
+
 func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]Room) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("upgrade:", err)
 		return
 	}
-	defer c.Close()
+	// defer c.Close()
 
 	mt, buf, err := c.ReadMessage()
 	if err != nil {
@@ -85,52 +140,10 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]Room) {
 	}
 
 	c.WriteMessage(mt, []byte(fmt.Sprintf("ConnectionId: %s", connId)))
+	log.Printf("Connected: %s", conn.Name)
 
-	for {
-		for i, r := range *rooms {
-			if conn.RoomId != r.Id {
-				continue
-			}
-
-			// TODO: remover mensagem da slice quando já tiver sido entregue
-			// para todas as conexões do Room
-			for j, m := range (*rooms)[i].Messages {
-				// Mensagem já foi entregue para essa conexão
-				// log.Println(m.DeliveredTo[connId])
-				if m.DeliveredTo[conn.Id] || m.ConnectionId == conn.Id {
-					continue
-				}
-
-				c.WriteMessage(1, []byte(m.Content))
-				(*rooms)[i].Messages[j].DeliveredTo[conn.Id] = true
-			}
-
-			continue
-		}
-
-		mt, buf, err := c.ReadMessage()
-		if err != nil {
-			log.Println("read:", err)
-			break
-		}
-
-		data := unmarshal_message[Message](c, mt, buf)
-		if data == nil {
-			continue
-		}
-
-		for i, r := range *rooms {
-			if data.RoomId == r.Id {
-				(*rooms)[i].Messages = append((*rooms)[i].Messages, Message{
-					Id:           uuid.New().String(),
-					Content:      data.Content,
-					RoomId:       data.RoomId,
-					ConnectionId: conn.Id,
-					DeliveredTo:  make(map[string]bool),
-				})
-			}
-		}
-	}
+	go read_messages(c, conn, rooms)
+	go broadcast_messages(c, conn, rooms)
 }
 
 const port = "8080"
