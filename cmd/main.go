@@ -16,7 +16,7 @@ import (
 
 var upgrader = websocket.Upgrader{}
 
-func unmarshal_message[T any](c *websocket.Conn, mt int, buf []byte) *T {
+func unmarshalMessage[T any](c *websocket.Conn, mt int, buf []byte) *T {
 	var message T
 	err := json.Unmarshal(buf, &message)
 	if err != nil {
@@ -33,7 +33,9 @@ func unmarshal_message[T any](c *websocket.Conn, mt int, buf []byte) *T {
 	return &message
 }
 
-func broadcast_messages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
+func broadcastMessages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
+	defer c.Close()
+
 	for {
 		for i, r := range *rooms {
 			if conn.RoomId != r.Id {
@@ -49,7 +51,11 @@ func broadcast_messages(c *websocket.Conn, conn internal.Connection, rooms *[]in
 					continue
 				}
 
-				c.WriteMessage(1, []byte(m.Content))
+				data, err := json.Marshal(m)
+				if err != nil {
+					log.Println("[broadcastMessages] error trying to marshal message:", err)
+				}
+				c.WriteMessage(websocket.BinaryMessage, data)
 				(*rooms)[i].Messages[j].DeliveredTo[conn.Id] = true
 			}
 
@@ -58,8 +64,9 @@ func broadcast_messages(c *websocket.Conn, conn internal.Connection, rooms *[]in
 	}
 }
 
-func read_messages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
-	// TODO: tratar o fechamento da conexão
+func readMessages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
+	defer c.Close()
+
 	for {
 		mt, buf, err := c.ReadMessage()
 		if err != nil {
@@ -67,7 +74,7 @@ func read_messages(c *websocket.Conn, conn internal.Connection, rooms *[]interna
 			break
 		}
 
-		data := unmarshal_message[internal.Message](c, mt, buf)
+		data := unmarshalMessage[internal.Message](c, mt, buf)
 		if data == nil {
 			continue
 		}
@@ -102,7 +109,7 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]internal.Room)
 		return
 	}
 
-	data := unmarshal_message[internal.Connection](c, mt, buf)
+	data := unmarshalMessage[internal.Connection](c, mt, buf)
 	if data == nil {
 		return
 	}
@@ -125,12 +132,11 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]internal.Room)
 		log.Println("error: ", err)
 		return
 	}
-	log.Println(res)
 	c.WriteMessage(mt, res)
-	log.Printf("Connected: %s", conn.Name)
+	log.Printf("Connected: %s with Id: %s", conn.Name, conn.Id)
 
-	go read_messages(c, conn, rooms)
-	go broadcast_messages(c, conn, rooms)
+	go readMessages(c, conn, rooms)
+	go broadcastMessages(c, conn, rooms)
 }
 
 const port = "8080"
