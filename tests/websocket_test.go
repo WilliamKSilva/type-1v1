@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/json"
 	"log"
-	"net/url"
 	"testing"
 
 	"github.com/WilliamKSilva/type-1v1/internal"
@@ -13,26 +12,12 @@ import (
 const mockedRoomId string = "21ca15d0-e346-4630-a240-773a828c31b3"
 
 func TestWebsocketConnection(t *testing.T) {
-	u := url.URL{Scheme: "ws", Host: "127.0.0.1:8080", Path: "/room"}
-	log.Printf("connection to %s", u.String())
-
-	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	c, err := internal.EstablishConnection("Teste", mockedRoomId)
 	if err != nil {
-		log.Fatal("dial:", err)
-	}
-	defer c.Close()
-
-	conn := internal.Connection{
-		Name:   "Teste",
-		RoomId: mockedRoomId,
-	}
-	data, err := json.Marshal(conn)
-	if err != nil {
-		t.Fatalf("Websocket connection: %s", err)
+		t.Fatal("Error trying to estabilish connection:", err)
 		return
 	}
-
-	c.WriteMessage(websocket.BinaryMessage, data)
+	defer c.Close()
 
 	for {
 		_, message, err := c.ReadMessage()
@@ -55,5 +40,51 @@ func TestWebsocketConnection(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// TODO: Servidor crashando quando se roda esse teste 2 vezes seguidas
+func TestWebsocketSendMessageToOtherConnection(t *testing.T) {
+	cSender, err := internal.EstablishConnection("CSender", mockedRoomId)
+	if err != nil {
+		t.Fatal("Error trying to estabilish connection cSender:", err)
+		return
+	}
+
+	cReceiver, err := internal.EstablishConnection("CReceiver", mockedRoomId)
+	if err != nil {
+		t.Fatal("Error trying to estabilish connection cReceiver:", err)
+		return
+	}
+
+	defer cSender.Close()
+	defer cReceiver.Close()
+
+	mes := internal.Message{
+		Content: "Sending message test",
+		RoomId:  mockedRoomId,
+	}
+	data, err := json.Marshal(mes)
+	if err != nil {
+		t.Fatal("Websocket error trying to marshal Message:", err)
+		return
+	}
+
+	err = cSender.WriteMessage(websocket.BinaryMessage, data)
+	if err != nil {
+		t.Fatal("Websocket error trying to send Message data:", err)
+		return
+	}
+
+	for {
+		_, m, err := cReceiver.ReadMessage()
+		if err != nil {
+			t.Log("read: ", err)
+			return
+		}
+
+		var message internal.Message
+		json.Unmarshal(m, &message)
+		log.Println("Received message content:", message.Content)
 	}
 }

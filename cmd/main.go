@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/WilliamKSilva/type-1v1/internal"
 	"github.com/google/uuid"
@@ -14,9 +15,14 @@ import (
 
 // TODO: Mensagem de connection tem que ser a primeira mensagem obrigatoriamente
 
+type State struct {
+	Mu    sync.Mutex
+	Rooms *[]internal.Room
+}
+
 var upgrader = websocket.Upgrader{}
 
-func unmarshal_message[T any](c *websocket.Conn, mt int, buf []byte) *T {
+func unmarshalMessage[T any](c *websocket.Conn, mt int, buf []byte) *T {
 	var message T
 	err := json.Unmarshal(buf, &message)
 	if err != nil {
@@ -33,33 +39,42 @@ func unmarshal_message[T any](c *websocket.Conn, mt int, buf []byte) *T {
 	return &message
 }
 
-func broadcast_messages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
+func broadcastMessages(c *websocket.Conn, conn internal.Connection, state *State) {
+	defer c.Close()
+
 	for {
-		for i, r := range *rooms {
+		state.Mu.Lock()
+		for i, r := range *state.Rooms {
 			if conn.RoomId != r.Id {
 				continue
 			}
 
 			// TODO: remover mensagem da slice quando já tiver sido entregue
 			// para todas as conexões do Room
-			for j, m := range (*rooms)[i].Messages {
+			for j, m := range (*state.Rooms)[i].Messages {
 				// Mensagem já foi entregue para essa conexão
 				// log.Println(m.DeliveredTo[connId])
 				if m.DeliveredTo[conn.Id] || m.ConnectionId == conn.Id {
 					continue
 				}
 
-				c.WriteMessage(1, []byte(m.Content))
-				(*rooms)[i].Messages[j].DeliveredTo[conn.Id] = true
+				data, err := json.Marshal(m)
+				if err != nil {
+					log.Println("[broadcastMessages] error trying to marshal message:", err)
+				}
+				c.WriteMessage(websocket.BinaryMessage, data)
+				(*state.Rooms)[i].Messages[j].DeliveredTo[conn.Id] = true
 			}
 
 			continue
 		}
+		state.Mu.Unlock()
 	}
 }
 
-func read_messages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
-	// TODO: tratar o fechamento da conexão
+func readMessages(c *websocket.Conn, conn internal.Connection, state *State) {
+	defer c.Close()
+
 	for {
 		mt, buf, err := c.ReadMessage()
 		if err != nil {
@@ -67,14 +82,15 @@ func read_messages(c *websocket.Conn, conn internal.Connection, rooms *[]interna
 			break
 		}
 
-		data := unmarshal_message[internal.Message](c, mt, buf)
+		data := unmarshalMessage[internal.Message](c, mt, buf)
 		if data == nil {
 			continue
 		}
 
-		for i, r := range *rooms {
+		state.Mu.Lock()
+		for i, r := range *state.Rooms {
 			if data.RoomId == r.Id {
-				(*rooms)[i].Messages = append((*rooms)[i].Messages, internal.Message{
+				(*state.Rooms)[i].Messages = append((*state.Rooms)[i].Messages, internal.Message{
 					Id:           uuid.New().String(),
 					Content:      data.Content,
 					RoomId:       data.RoomId,
@@ -85,10 +101,11 @@ func read_messages(c *websocket.Conn, conn internal.Connection, rooms *[]interna
 
 			log.Printf("New message received from: %s. Content: %s", conn.Name, data.Content)
 		}
+		state.Mu.Unlock()
 	}
 }
 
-func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]internal.Room) {
+func socket_conn(w http.ResponseWriter, r *http.Request, state *State) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("upgrade:", err)
@@ -102,7 +119,7 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]internal.Room)
 		return
 	}
 
-	data := unmarshal_message[internal.Connection](c, mt, buf)
+	data := unmarshalMessage[internal.Connection](c, mt, buf)
 	if data == nil {
 		return
 	}
@@ -114,9 +131,9 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]internal.Room)
 		RoomId: data.RoomId,
 	}
 
-	for i, r := range *rooms {
+	for i, r := range *state.Rooms {
 		if r.Id == conn.RoomId {
-			(*rooms)[i].Connections = append((*rooms)[i].Connections, conn)
+			(*state.Rooms)[i].Connections = append((*state.Rooms)[i].Connections, conn)
 		}
 	}
 
@@ -125,25 +142,29 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]internal.Room)
 		log.Println("error: ", err)
 		return
 	}
-	log.Println(res)
 	c.WriteMessage(mt, res)
-	log.Printf("Connected: %s", conn.Name)
+	log.Printf("Connected: %s with Id: %s", conn.Name, conn.Id)
 
-	go read_messages(c, conn, rooms)
-	go broadcast_messages(c, conn, rooms)
+	go readMessages(c, conn, state)
+	go broadcastMessages(c, conn, state)
 }
 
 const port = "8080"
 
 func main() {
 	flag.Parse()
-	var rooms []internal.Room
-	const mockedRoomId string = "21ca15d0-e346-4630-a240-773a828c31b3"
-	rooms = append(rooms, internal.Room{
-		Id: mockedRoomId,
-	})
 
-	http.HandleFunc("/room", func(w http.ResponseWriter, r *http.Request) { socket_conn(w, r, &rooms) })
+	const mockedRoomId string = "21ca15d0-e346-4630-a240-773a828c31b3"
+
+	state := State{
+		Rooms: &[]internal.Room{
+			internal.Room{
+				Id: mockedRoomId,
+			},
+		},
+	}
+
+	http.HandleFunc("/room", func(w http.ResponseWriter, r *http.Request) { socket_conn(w, r, &state) })
 	log.Printf("Server running at port %s", port)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf("127.0.0.1:%s", port), nil))
 }
