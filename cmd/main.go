@@ -7,29 +7,10 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/WilliamKSilva/type-1v1/internal"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
-
-type Connection struct {
-	Id     string `json:"id"`
-	Name   string `json:"name"`
-	RoomId string `json:"room_id"`
-}
-
-type Message struct {
-	Id           string          `json:"id"`
-	Content      string          `json:"content"`
-	DeliveredTo  map[string]bool `json:"delivered_to"`
-	ConnectionId string          `json:"connection_id"`
-	RoomId       string          `json:"room_id"`
-}
-
-type Room struct {
-	Id          string       `json:"id"`
-	Connections []Connection `json:"connections"`
-	Messages    []Message    `json:"messages"`
-}
 
 // TODO: Mensagem de connection tem que ser a primeira mensagem obrigatoriamente
 
@@ -52,7 +33,7 @@ func unmarshal_message[T any](c *websocket.Conn, mt int, buf []byte) *T {
 	return &message
 }
 
-func broadcast_messages(c *websocket.Conn, conn Connection, rooms *[]Room) {
+func broadcast_messages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
 	for {
 		for i, r := range *rooms {
 			if conn.RoomId != r.Id {
@@ -77,7 +58,7 @@ func broadcast_messages(c *websocket.Conn, conn Connection, rooms *[]Room) {
 	}
 }
 
-func read_messages(c *websocket.Conn, conn Connection, rooms *[]Room) {
+func read_messages(c *websocket.Conn, conn internal.Connection, rooms *[]internal.Room) {
 	// TODO: tratar o fechamento da conexão
 	for {
 		mt, buf, err := c.ReadMessage()
@@ -86,14 +67,14 @@ func read_messages(c *websocket.Conn, conn Connection, rooms *[]Room) {
 			break
 		}
 
-		data := unmarshal_message[Message](c, mt, buf)
+		data := unmarshal_message[internal.Message](c, mt, buf)
 		if data == nil {
 			continue
 		}
 
 		for i, r := range *rooms {
 			if data.RoomId == r.Id {
-				(*rooms)[i].Messages = append((*rooms)[i].Messages, Message{
+				(*rooms)[i].Messages = append((*rooms)[i].Messages, internal.Message{
 					Id:           uuid.New().String(),
 					Content:      data.Content,
 					RoomId:       data.RoomId,
@@ -107,7 +88,7 @@ func read_messages(c *websocket.Conn, conn Connection, rooms *[]Room) {
 	}
 }
 
-func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]Room) {
+func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]internal.Room) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("upgrade:", err)
@@ -121,13 +102,13 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]Room) {
 		return
 	}
 
-	data := unmarshal_message[Connection](c, mt, buf)
+	data := unmarshal_message[internal.Connection](c, mt, buf)
 	if data == nil {
 		return
 	}
 
 	connId := uuid.New().String()
-	conn := Connection{
+	conn := internal.Connection{
 		Id:     connId,
 		Name:   data.Name,
 		RoomId: data.RoomId,
@@ -139,7 +120,13 @@ func socket_conn(w http.ResponseWriter, r *http.Request, rooms *[]Room) {
 		}
 	}
 
-	c.WriteMessage(mt, []byte(fmt.Sprintf("ConnectionId: %s", connId)))
+	res, err := json.Marshal(data)
+	if err != nil {
+		log.Println("error: ", err)
+		return
+	}
+	log.Println(res)
+	c.WriteMessage(mt, res)
 	log.Printf("Connected: %s", conn.Name)
 
 	go read_messages(c, conn, rooms)
@@ -150,9 +137,9 @@ const port = "8080"
 
 func main() {
 	flag.Parse()
-	var rooms []Room
+	var rooms []internal.Room
 	const mockedRoomId string = "21ca15d0-e346-4630-a240-773a828c31b3"
-	rooms = append(rooms, Room{
+	rooms = append(rooms, internal.Room{
 		Id: mockedRoomId,
 	})
 
